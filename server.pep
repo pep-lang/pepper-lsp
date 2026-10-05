@@ -2,6 +2,8 @@
 # implements, the `Client` it talks back through, and `serve`, which runs
 # the message loop.
 
+import async;
+import [Channel] from async;
 import io;
 import json;
 import [JsonValue] from json;
@@ -15,9 +17,11 @@ import "types";
 ## notification is ignored, so a server defines just what its
 ## `ServerCapabilities` promise.
 ##
-## `serve` calls the methods one at a time, in the order the messages
-## arrive, so a server's state needs no locks: a `did_change` is always
-## applied before the request that follows it.
+## `serve` calls the methods one at a time on one thread, in the order the
+## messages arrive, so a server's state needs no locks: a `did_change` is
+## always applied before the request that follows it. Slow work, such as
+## analyzing a program, can run on another thread, which hands its result
+## back through a channel and `Client.wake` (see `woken`).
 export trait LanguageServer {
     ## `initialize`: the first request. Says what the server can do.
     ##
@@ -150,6 +154,11 @@ export trait LanguageServer {
         return Result<JsonValue, ResponseError>.err(ResponseError.method_not_found(method));
     }
 
+    ## Called on the server's thread after another thread called
+    ## `Client.wake`: the time to take in what that thread left for the
+    ## server.
+    woken() {}
+
     ## Any notification this trait has no method for, with its parameters
     ## as JSON. `$/` notifications the server ignores arrive here too.
     ##
@@ -158,17 +167,37 @@ export trait LanguageServer {
     notification(method: String, params: JsonValue) {}
 }
 
-## The server's way to talk to the client: notifications it sends on its
-## own, such as diagnostics. Create one per session and pass it to the
-## server, as `serve` does.
-export struct Client {
-    var _output: io.Writer;
+## What arrives at the server's message loop: a client message, the end of
+## the input, or a wake from `Client.wake`.
+export enum Inbound {
+    ## A message from the client, as JSON.
+    Message(message: JsonValue),
+    ## The input ended: empty when it ended cleanly, else what went wrong.
+    End(error: String),
+    ## `Client.wake` was called.
+    Wake,
+}
 
-    ## Creates a client writing to `output`.
+## The server's way to talk to the client: notifications it sends on its
+## own, such as diagnostics, and `wake`, which brings work done on other
+## threads back to the server's thread.
+##
+## A Client is `[Shared]`: keep it in the server and hand it to the threads
+## the server starts. Each message it sends is queued, so sending never
+## waits for the client to read.
+[Shared]
+export struct Client {
+    const _outgoing: Channel<String>;
+    const _inbound: Channel<Inbound>;
+
+    ## Creates a client that queues messages on `outgoing` and wakes the
+    ## loop through `inbound`; `serve` and `serve_stdio` make one.
     ##
-    ## @param output the stream the client reads
-    construct(output: io.Writer) {
-        _output = output;
+    ## @param outgoing the messages for the client as JSON text, in order
+    ## @param inbound the loop's queue
+    construct(outgoing: Channel<String>, inbound: Channel<Inbound>) {
+        _outgoing = outgoing;
+        _inbound = inbound;
     }
 
     ## Sends `textDocument/publishDiagnostics`: the document's diagnostics,
@@ -210,7 +239,16 @@ export struct Client {
         message["jsonrpc"] = JsonValue.String("2.0");
         message["method"] = JsonValue.String(method);
         message["params"] = params;
-        _send(message);
+        _outgoing.send(message.to_string());
+    }
+
+    ## Makes the message loop call the server's `woken` on the server's
+    ## thread, after the messages already queued. A thread that finished
+    ## work for the server puts its result where the server will look (a
+    ## `Channel` the server owns) and then calls `wake`, so the server's
+    ## state is only ever touched on its own thread.
+    wake() {
+        _inbound.send(Inbound.Wake);
     }
 
     _message(kind: int, message: String): JsonValue {
@@ -220,11 +258,9 @@ export struct Client {
         return to_protocol_json(params);
     }
 
-    # Writes a message. A client that has gone away is not an error the
-    # server can act on, so a failed write is dropped; the session ends at
-    # the next read.
+    # Queues a response.
     _send(message: JsonValue) {
-        write_message(_output, message);
+        _outgoing.send(message.to_string());
     }
 }
 
@@ -264,46 +300,99 @@ export without_nulls(value: JsonValue): JsonValue {
 }
 
 ## Runs a language server over standard input and output until the client
-## sends `exit`.
+## sends `exit` or the input ends.
+##
+## A thread reads standard input and another writes standard output, so
+## the server's thread only handles messages, and a message sent from any
+## thread goes out without waiting for the server.
 ##
 ## @param make creates the server, given the client it talks back through
 ## @returns the process's exit code: 0 after `shutdown` then `exit`,
 ##     1 otherwise
 export serve_stdio<S: LanguageServer>(make: (Client) => S): int {
-    return serve<S>(make, io.File.stdin(), io.File.stdout());
+    var inbound = Channel<Inbound>();
+    var outgoing = Channel<String>();
+    async.Thread.spawn(() => {
+        _read_stdin(inbound);
+    }, "lsp-reader");
+    var writer = async.Thread.spawn(() => {
+        _write_stdout(outgoing);
+    }, "lsp-writer");
+    var code = serve<S>(make, inbound, outgoing);
+    outgoing.close();
+    writer.join();
+    return code;
 }
 
-## Runs a language server until the client sends `exit` or the input ends.
+## Runs a language server on the calling thread until the client sends
+## `exit` or `inbound` delivers `End`.
 ##
-## Answers requests before `initialize` with `SERVER_NOT_INITIALIZED` and
-## requests after `shutdown` with `INVALID_REQUEST`, and handles `exit`.
-## Every other message goes to the server's method for it.
+## Handles one inbound item at a time, in order: messages go to the
+## server's method for them, and each `Wake` calls `woken`. Answers requests
+## before `initialize` with `SERVER_NOT_INITIALIZED` and requests after
+## `shutdown` with `INVALID_REQUEST`. `serve_stdio` connects the channels to
+## standard input and output; tests can fill and read them directly.
 ##
 ## @param make creates the server, given the client it talks back through
-## @param input the stream the client writes
-## @param output the stream the client reads
+## @param inbound the client's messages, then `End`
+## @param outgoing where messages for the client go, as JSON text, in order
 ## @returns the process's exit code: 0 after `shutdown` then `exit`,
 ##     1 otherwise
-export serve<S: LanguageServer>(make: (Client) => S, input: io.Reader, output: io.Writer): int {
-    var client = Client(output);
+export serve<S: LanguageServer>(make: (Client) => S, inbound: Channel<Inbound>, outgoing: Channel<String>): int {
+    var client = Client(outgoing, inbound);
     var server = make(client);
     var session = _Session<S>(server, client);
-    var reader = MessageReader(input);
     while (true) {
-        var message = reader.read();
-        if (message.is_err()) {
-            client.log_message(MESSAGE_ERROR, message.error());
+        var next = inbound.receive();
+        if (next.is_err()) {
             return 1;
         }
-        if (message.value().is_empty()) {
-            return 1;
-        }
-        var done = session.handle(message.value().value());
-        if (done is Value(code)) {
-            return code;
+        match (next.value()) {
+            Message(message) => {
+                var done = session.handle(message);
+                if (done is Value(code)) {
+                    return code;
+                }
+            }
+            End(error) => {
+                if (!error.is_empty) {
+                    client.log_message(MESSAGE_ERROR, error);
+                }
+                return 1;
+            }
+            Wake => {
+                server.woken();
+            }
         }
     }
     return 1;
+}
+
+# Reads framed messages from standard input into `inbound`, then `End`.
+_read_stdin(inbound: Channel<Inbound>) {
+    var reader = MessageReader(io.File.stdin());
+    while (true) {
+        var message = reader.read();
+        if (message.is_err()) {
+            inbound.send(copy(Inbound.End(message.error())));
+            return;
+        }
+        if (message.value().is_empty()) {
+            inbound.send(Inbound.End(""));
+            return;
+        }
+        inbound.send(copy(Inbound.Message(message.value().value())));
+    }
+}
+
+# Writes the messages of `outgoing` to standard output until it is closed.
+_write_stdout(outgoing: Channel<String>) {
+    var output = io.File.stdout();
+    for (var message in outgoing) {
+        if (write_text(output, message).is_err()) {
+            return;
+        }
+    }
 }
 
 # The state of one session around the server: where it is in the

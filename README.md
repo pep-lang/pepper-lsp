@@ -18,7 +18,9 @@ The package is the module `lsp`:
   parameters into typed structs, and answer bad parameters with
   `INVALID_PARAMS`.
 - **`Client`**: how the server talks back, with `publish_diagnostics`,
-  `log_message`, `show_message` and `send_notification`.
+  `log_message`, `show_message` and `send_notification`. It also has
+  `wake`, which brings work done on other threads back to the server's
+  thread.
 - **`TextDocument`**: an open document's text, kept in step with the
   client's changes (full or incremental). It converts protocol positions,
   which count UTF-16 columns, to and from byte offsets.
@@ -71,10 +73,45 @@ lsp = { github = "justinboswell/pepper-lsp", branch = "main" }
 
 ## How it runs
 
-`serve` handles messages one at a time, in the order they arrive. A
-server's state therefore needs no locks, and a `didChange` is always
-applied before the request that follows it. Because of this,
-`$/cancelRequest` has nothing to cancel and goes to `notification`.
+`serve_stdio` reads standard input on one thread and writes standard
+output on another. The server's methods run on the calling thread, one at
+a time, in the order messages arrive. A server's state therefore needs no
+locks, and a `didChange` is always applied before the request that
+follows it. Because of this, `$/cancelRequest` has nothing to cancel and
+goes to `notification`.
+
+Slow work, such as analyzing a program, belongs on another thread so that
+requests keep being answered. `Client` is `[Shared]`, so that thread can
+publish diagnostics itself. To hand a result back to the server, the
+thread sends it on a `Channel` the server owns and calls `client.wake()`.
+`serve` then calls the server's `woken()` on the server's thread, after
+the messages already queued:
+
+```pepper
+did_change(params: lsp.DidChangeTextDocumentParams) {
+    var texts = Channel<String>();
+    texts.send(copy(current_text));
+    var results = this.results;   # a Channel<Analysis> the server owns
+    var client = this.client;
+    async.Thread.spawn(() => {
+        results.send(analyze(texts.receive().value()));
+        client.wake();
+    });
+}
+
+woken() {
+    while (true) {
+        var analysis = results.try_receive();
+        if (analysis.is_err()) {
+            return;
+        }
+        latest = analysis.value();
+    }
+}
+```
+
+`serve(make, inbound, outgoing)` is the same loop on channels you supply.
+Tests use it to drive a server without standard input.
 
 ## Not yet
 

@@ -1,6 +1,8 @@
 # The framework's tests: framing, positions, and a whole session run
 # through `serve` in memory.
 
+import async;
+import [Channel] from async;
 import io;
 import json;
 import [JsonValue] from json;
@@ -14,16 +16,15 @@ frame(message: String): String {
     return $"Content-Length: {message.size}\r\n\r\n{message}";
 }
 
-# The messages a server wrote, in order.
-messages_in(output: io.ByteWriter): Array<JsonValue> {
-    var reader = lsp.MessageReader(io.ByteReader(output.bytes));
+# The messages a server queued, in order.
+messages_in(outgoing: Channel<String>): Array<JsonValue> {
     var out = Array<JsonValue>();
     while (true) {
-        var message = reader.read().value();
-        if (message.is_empty()) {
+        var message = outgoing.try_receive();
+        if (message.is_err()) {
             break;
         }
-        out.append(message.value());
+        out.append(json.parse(message.value()).value());
     }
     return out;
 }
@@ -109,13 +110,15 @@ extend Echo with lsp.LanguageServer {
     }
 }
 
-# Runs `messages` (JSON texts) through an Echo server.
-run_session(messages: Array<String>, output: io.ByteWriter): int {
-    var input = "";
+# Runs `messages` (JSON texts), then the end of the input, through an Echo
+# server.
+run_session(messages: Array<String>, outgoing: Channel<String>): int {
+    var inbound = Channel<lsp.Inbound>();
     for (var message in messages) {
-        input += frame(message);
+        inbound.send(copy(lsp.Inbound.Message(json.parse(message).value())));
     }
-    return lsp.serve<Echo>((client) => Echo(client), io.ByteReader(input.bytes()), output);
+    inbound.send(lsp.Inbound.End(""));
+    return lsp.serve<Echo>((client) => Echo(client), inbound, outgoing);
 }
 
 const INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}";
@@ -206,7 +209,7 @@ applies_incremental_and_full_changes() {
 
 [Test]
 runs_a_session_from_initialize_to_exit() {
-    var output = io.ByteWriter();
+    var output = Channel<String>();
     var code = run_session(
         [
             "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"textDocument/hover\",\"params\":{}}",
@@ -241,7 +244,7 @@ runs_a_session_from_initialize_to_exit() {
 
 [Test]
 answers_unknown_and_invalid_requests() {
-    var output = io.ByteWriter();
+    var output = Channel<String>();
     run_session(
         [
             INITIALIZE,
@@ -263,13 +266,13 @@ answers_unknown_and_invalid_requests() {
 
 [Test]
 exits_with_1_without_shutdown_and_refuses_requests_after_it() {
-    var output = io.ByteWriter();
+    var output = Channel<String>();
     expect_equal(run_session([INITIALIZE, EXIT], output), 1);
-    output = io.ByteWriter();
+    output = Channel<String>();
     run_session([INITIALIZE, SHUTDOWN, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"shutdown\"}", EXIT], output);
     var messages = messages_in(output);
     expect_equal(messages[2]["error"]["code"].as_int().value(), lsp.INVALID_REQUEST as long);
-    output = io.ByteWriter();
+    output = Channel<String>();
     expect_equal(run_session([INITIALIZE], output), 1);
 }
 
@@ -281,4 +284,71 @@ leaves_out_null_members() {
     edit.add("file:///a", lsp.TextEdit(lsp.Range(), "x"));
     edit.add("file:///a", lsp.TextEdit(lsp.Range(), "y"));
     expect_equal(edit.changes["file:///a"].count, 2 as ulong);
+}
+
+# A server that counts a document's words on another thread and publishes
+# the count from its own thread once woken.
+struct Counter {
+    var client: lsp.Client;
+    const results: Channel<String>;
+
+    construct(client: lsp.Client) {
+        this.client = client;
+        this.results = Channel<String>();
+    }
+}
+
+extend Counter with lsp.LanguageServer {
+    initialize(params: lsp.InitializeParams): Result<lsp.InitializeResult, ResponseError> {
+        return Result<lsp.InitializeResult, ResponseError>.ok(lsp.InitializeResult());
+    }
+
+    did_open(params: lsp.DidOpenTextDocumentParams) {
+        var texts = Channel<String>();
+        texts.send(copy(params.text_document.text));
+        var results = this.results;
+        var client = this.client;
+        async.Thread.spawn(() => {
+            var text = texts.receive().value();
+            results.send($"{text.split(" ").count} words");
+            client.wake();
+        });
+    }
+
+    woken() {
+        while (true) {
+            var result = results.try_receive();
+            if (result.is_err()) {
+                return;
+            }
+            client.log_message(lsp.MESSAGE_INFO, result.value());
+        }
+    }
+}
+
+[Test]
+brings_work_from_other_threads_back_through_wake() {
+    var inbound = Channel<lsp.Inbound>();
+    var outgoing = Channel<String>();
+    var exit_code = Channel<int>();
+    async.Thread.spawn(() => {
+        exit_code.send(lsp.serve<Counter>((client) => Counter(client), inbound, outgoing));
+    });
+    var messages: String[] = [
+        INITIALIZE,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":"
+            + "{\"uri\":\"file:///a\",\"languageId\":\"x\",\"version\":1,\"text\":\"one two three\"}}}"
+    ];
+    for (var message in messages) {
+        inbound.send(copy(lsp.Inbound.Message(json.parse(message).value())));
+    }
+    var initialized = json.parse(outgoing.receive_for(5000).value()).value();
+    expect_equal(initialized["id"].as_int().value(), 1);
+    var logged = json.parse(outgoing.receive_for(5000).value()).value();
+    expect_equal(logged["method"].as_string().value(), "window/logMessage");
+    expect_equal(logged["params"]["message"].as_string().value(), "3 words");
+    for (var message in [SHUTDOWN, EXIT]) {
+        inbound.send(copy(lsp.Inbound.Message(json.parse(message).value())));
+    }
+    expect_equal(exit_code.receive_for(5000).value(), 0);
 }

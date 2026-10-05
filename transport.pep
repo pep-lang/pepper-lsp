@@ -162,7 +162,16 @@ export struct MessageReader {
 ## @param message the message
 ## @returns an error when the stream fails
 export write_message(output: io.Writer, message: JsonValue): io.IoResult<void> {
-    var body = message.to_string();
+    return write_text(output, message.to_string());
+}
+
+## Writes a message already encoded as JSON text to `output` with its
+## header.
+##
+## @param output the stream the client reads
+## @param body the message's JSON text
+## @returns an error when the stream fails
+export write_text(output: io.Writer, body: String): io.IoResult<void> {
     var framed = $"Content-Length: {body.size}\r\n\r\n{body}";
     return output.write_all(framed.bytes());
 }
