@@ -3,7 +3,7 @@
 # the message loop.
 
 import async;
-import [Channel] from async;
+import [Atomic, Channel] from async;
 import io;
 import json;
 import [JsonValue] from json;
@@ -189,6 +189,8 @@ export enum Inbound {
 export struct Client {
     const _outgoing: Channel<String>;
     const _inbound: Channel<Inbound>;
+    # The id of the next request the server sends.
+    const _next_id: Atomic<long>;
 
     ## Creates a client that queues messages on `outgoing` and wakes the
     ## loop through `inbound`; `serve` and `serve_stdio` make one.
@@ -198,6 +200,7 @@ export struct Client {
     construct(outgoing: Channel<String>, inbound: Channel<Inbound>) {
         _outgoing = outgoing;
         _inbound = inbound;
+        _next_id = Atomic<long>(1);
     }
 
     ## Sends `textDocument/publishDiagnostics`: the document's diagnostics,
@@ -240,6 +243,48 @@ export struct Client {
         message["method"] = JsonValue.String(method);
         message["params"] = params;
         _outgoing.send(message.to_string());
+    }
+
+    ## Sends a request to the client, such as `client/registerCapability`
+    ## or `workspace/inlayHint/refresh`, without waiting for its answer: the
+    ## client's response is dropped, and an error in it is logged.
+    ##
+    ## @param method the method
+    ## @param params its parameters
+    send_request(method: String, params: JsonValue) {
+        var message = JsonValue.object();
+        message["jsonrpc"] = JsonValue.String("2.0");
+        message["id"] = JsonValue.Integer(_next_id.fetch_add(1));
+        message["method"] = JsonValue.String(method);
+        message["params"] = params;
+        _outgoing.send(message.to_string());
+    }
+
+    ## Asks the client to send `workspace/didChangeWatchedFiles` for the
+    ## files matching `glob`, such as `**/*.pep`. Clients that support
+    ## dynamic registration (see `InitializeParams.capabilities`) honor it.
+    ##
+    ## @param id a name for the registration
+    ## @param glob the files to watch
+    watch_files(id: String, glob: String) {
+        var watcher = JsonValue.object();
+        watcher["globPattern"] = JsonValue.String(glob);
+        var options = JsonValue.object();
+        options["watchers"] = JsonValue.array([watcher]);
+        var registration = JsonValue.object();
+        registration["id"] = JsonValue.String(id);
+        registration["method"] = JsonValue.String("workspace/didChangeWatchedFiles");
+        registration["registerOptions"] = options;
+        var params = JsonValue.object();
+        params["registrations"] = JsonValue.array([registration]);
+        send_request("client/registerCapability", params);
+    }
+
+    ## Makes the editor `workspace/inlayHint/refresh`: ask again for the
+    ## inlay hints of the documents it shows, after an analysis changed
+    ## them.
+    refresh_inlay_hints() {
+        send_request("workspace/inlayHint/refresh", JsonValue.Null);
     }
 
     ## Makes the message loop call the server's `woken` on the server's
@@ -415,8 +460,14 @@ struct _Session<S: LanguageServer> {
         var method_value = message["method"];
         var method = method_value.as_string();
         if (method.is_empty()) {
-            # A response to a request the server sent; this framework sends
-            # none yet.
+            # A response to a request the server sent, which `send_request`
+            # does not wait for; only an error is worth reporting.
+            if (message.contains("error")) {
+                var error = message["error"]["message"].as_string();
+                client.log_message(
+                    MESSAGE_WARNING, $"a request to the client failed: {error.is_value() ? error.value() : ""}"
+                );
+            }
             return Optional<int>.Empty;
         }
         var params = message.contains("params") ? message["params"] : JsonValue.Null;

@@ -352,3 +352,22 @@ brings_work_from_other_threads_back_through_wake() {
     }
     expect_equal(exit_code.receive_for(5000).value(), 0);
 }
+
+[Test]
+sends_requests_to_the_client_and_drops_their_answers() {
+    var outgoing = Channel<String>();
+    var client = lsp.Client(outgoing, Channel<lsp.Inbound>());
+    client.watch_files("pep-files", "**/*.pep");
+    client.refresh_inlay_hints();
+    var messages = messages_in(outgoing);
+    expect_equal(messages[0]["id"].as_int().value(), 1);
+    expect_equal(messages[0]["method"].as_string().value(), "client/registerCapability");
+    var registration = messages[0]["params"]["registrations"][0];
+    expect_equal(registration["registerOptions"]["watchers"][0]["globPattern"].as_string().value(), "**/*.pep");
+    expect_equal(messages[1]["id"].as_int().value(), 2);
+    expect_equal(messages[1]["method"].as_string().value(), "workspace/inlayHint/refresh");
+
+    var output = Channel<String>();
+    run_session([INITIALIZE, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", EXIT], output);
+    expect_equal(messages_in(output).count, 1 as ulong);
+}

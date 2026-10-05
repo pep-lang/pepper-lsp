@@ -115,9 +115,9 @@ Tests use it to drive a server without standard input.
 
 ## Not yet
 
-- Requests from the server to the client, such as
-  `workspace/configuration` and `window/showMessageRequest`. Their
-  responses are ignored for now.
+- Answers to requests from the server to the client. `send_request` (with
+  `watch_files` and `refresh_inlay_hints`) sends a request and drops its
+  answer, so `workspace/configuration` can't be read yet.
 - Typed methods for semantic tokens, signature help, and the other
   requests `pep-lsp` doesn't use yet. They reach `request` as JSON.
 

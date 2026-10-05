@@ -28,6 +28,12 @@ export const SEVERITY_INFORMATION = 3;
 ## `DiagnosticSeverity.Hint`.
 export const SEVERITY_HINT = 4;
 
+## `DiagnosticTag.Unnecessary`: code the editor shows faded, such as code
+## left out of the build.
+export const TAG_UNNECESSARY = 1;
+## `DiagnosticTag.Deprecated`: code the editor shows struck through.
+export const TAG_DEPRECATED = 2;
+
 ## `MessageType.Error`, for `Client.log_message` and `Client.show_message`.
 export const MESSAGE_ERROR = 1;
 ## `MessageType.Warning`.
@@ -551,6 +557,9 @@ export struct Diagnostic {
     ## Places that explain it.
     [Name("relatedInformation")]
     var related_information: Array<DiagnosticRelatedInformation>?;
+    ## `TAG_UNNECESSARY` or `TAG_DEPRECATED`, which change how the editor
+    ## shows the code.
+    var tags: Array<int>?;
     ## Data the server gets back in a code action's context.
     var data: JsonValue?;
 
