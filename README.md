@@ -21,6 +21,7 @@ The package is the module `lsp`:
   `log_message`, `show_message` and `send_notification`. It also has
   `wake`, which brings work done on other threads back to the server's
   thread.
+- **`uri_to_path`** and **`path_to_uri`**: `file:` URIs and the paths they name.
 - **`TextDocument`**: an open document's text, kept in step with the
   client's changes (full or incremental). It converts protocol positions,
   which count UTF-16 columns, to and from byte offsets.

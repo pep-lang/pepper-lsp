@@ -371,3 +371,16 @@ sends_requests_to_the_client_and_drops_their_answers() {
     run_session([INITIALIZE, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", EXIT], output);
     expect_equal(messages_in(output).count, 1 as ulong);
 }
+
+# ── URIs ─────────────────────────────────────────────────────────────────
+
+[Test]
+converts_file_uris_and_paths() {
+    expect_equal(lsp.uri_to_path("file:///home/me/a%20b.pep").value(), "/home/me/a b.pep");
+    expect_equal(lsp.uri_to_path("file:///c%3A/src/a.pep").value(), "c:/src/a.pep");
+    expect_equal(lsp.uri_to_path("file://localhost/x").value(), "/x");
+    expect_true(lsp.uri_to_path("untitled:Untitled-1").is_empty());
+    expect_true(lsp.uri_to_path("file://server/share/x").is_empty());
+    expect_equal(lsp.path_to_uri("/home/me/a b.pep"), "file:///home/me/a%20b.pep");
+    expect_equal(lsp.path_to_uri("C:\\src\\é.pep"), "file:///C%3A/src/%C3%A9.pep");
+}

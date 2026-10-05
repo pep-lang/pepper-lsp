@@ -38,3 +38,4 @@ export * from "jsonrpc";
 export * from "server";
 export * from "transport";
 export * from "types";
+export * from "uri";
