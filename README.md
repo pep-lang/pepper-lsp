@@ -1,7 +1,7 @@
 # pepper-lsp
 
 A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
-framework for [Pepper](https://github.com/justinboswell/pepper), in the style
+framework for [Pepper](https://github.com/pep-lang/pepper), in the style
 of Rust's [tower-lsp](https://github.com/ebkalderon/tower-lsp). Use it to
 write a language server for any language in Pepper. Pepper's own server,
 `pep-lsp`, is built on it.
@@ -69,7 +69,7 @@ Add the package to `pep.toml`:
 
 ```toml
 [dependencies]
-lsp = { github = "justinboswell/pepper-lsp", branch = "main" }
+lsp = { github = "pep-lang/pepper-lsp", branch = "main" }
 ```
 
 ## How it runs
