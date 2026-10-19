@@ -1,6 +1,6 @@
 [package]
 name = "lsp"
-version = "0.1.0"
+version = "1.0.0"
 description = "A Language Server Protocol framework: write a language server for any language in Pepper"
 license = "Apache-2.0"
 repository = "https://github.com/pep-lang/pepper-lsp"
