@@ -291,10 +291,12 @@ leaves_out_null_members() {
 struct Counter {
     var client: lsp.Client;
     const results: Channel<String>;
+    var workers: Array<async.Thread>;
 
     construct(client: lsp.Client) {
         this.client = client;
         this.results = Channel<String>();
+        this.workers = Array<async.Thread>();
     }
 }
 
@@ -308,11 +310,20 @@ extend Counter with lsp.LanguageServer {
         texts.send(copy(params.text_document.text));
         var results = this.results;
         var client = this.client;
-        async.Thread.spawn(() => {
+        workers.append(async.Thread.spawn(() => {
             var text = texts.receive().value();
             results.send($"{text.split(" ").count} words");
             client.wake();
-        });
+        }));
+    }
+
+    # A worker still holds what it captured until it ends, and the test's
+    # leak check counts it.
+    shutdown(): Result<void, ResponseError> {
+        for (var worker in workers) {
+            worker.join();
+        }
+        return Result<void, ResponseError>.ok();
     }
 
     woken() {
@@ -331,7 +342,7 @@ brings_work_from_other_threads_back_through_wake() {
     var inbound = Channel<lsp.Inbound>();
     var outgoing = Channel<String>();
     var exit_code = Channel<int>();
-    async.Thread.spawn(() => {
+    var server = async.Thread.spawn(() => {
         exit_code.send(lsp.serve<Counter>((client) => Counter(client), inbound, outgoing));
     });
     var messages: String[] = [
@@ -351,6 +362,9 @@ brings_work_from_other_threads_back_through_wake() {
         inbound.send(copy(lsp.Inbound.Message(json.parse(message).value())));
     }
     expect_equal(exit_code.receive_for(5000).value(), 0);
+    # The thread still holds what it captured until it ends, and the leak
+    # check counts it.
+    server.join();
 }
 
 [Test]
