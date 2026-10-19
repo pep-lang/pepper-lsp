@@ -2,5 +2,5 @@
 name = "lsp"
 version = "0.1.0"
 description = "A Language Server Protocol framework: write a language server for any language in Pepper"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/justinboswell/pepper-lsp"
