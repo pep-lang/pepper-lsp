@@ -131,6 +131,15 @@ tests/run.sh path/to/pepper
 This runs the `[Test]` functions in `tests/lsp_test.pep`, which include
 whole sessions driven through `serve` in memory, and builds the example.
 
+## Releasing
+
+CI (`.github/workflows/ci.yml`) runs the tests on Linux, macOS and
+Windows for every push to `main` and every pull request. To release, set
+`version` in `pep.toml`, merge, then push the matching tag
+(`git tag v1.0.0 && git push origin v1.0.0`): CI tests the tag and
+publishes a GitHub release for it. `pepper package add` and `pepper
+package update` find versions by their tags.
+
 ## License
 
 Apache-2.0; see [LICENSE](LICENSE).
