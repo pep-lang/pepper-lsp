@@ -313,6 +313,7 @@ export struct Client {
 ## `json.to_json` does, but leaving out the members whose value is null (an
 ## Empty optional), which the protocol treats as absent.
 ##
+## @typeParam T the protocol type
 ## @param value a value of one of the protocol's types
 ## @returns its JSON
 export to_protocol_json<T>(value: T): JsonValue {
@@ -351,6 +352,7 @@ export without_nulls(value: JsonValue): JsonValue {
 ## the server's thread only handles messages, and a message sent from any
 ## thread goes out without waiting for the server.
 ##
+## @typeParam S the server type
 ## @param make creates the server, given the client it talks back through
 ## @returns the process's exit code: 0 after `shutdown` then `exit`,
 ##     1 otherwise
@@ -378,6 +380,7 @@ export serve_stdio<S: LanguageServer>(make: (Client) => S): int {
 ## `shutdown` with `INVALID_REQUEST`. `serve_stdio` connects the channels to
 ## standard input and output; tests can fill and read them directly.
 ##
+## @typeParam S the server type
 ## @param make creates the server, given the client it talks back through
 ## @param inbound the client's messages, then `End`
 ## @param outgoing where messages for the client go, as JSON text, in order

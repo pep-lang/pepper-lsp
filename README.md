@@ -130,3 +130,7 @@ tests/run.sh path/to/pepper
 
 This runs the `[Test]` functions in `tests/lsp_test.pep`, which include
 whole sessions driven through `serve` in memory, and builds the example.
+
+## License
+
+Apache-2.0; see [LICENSE](LICENSE).
